@@ -1,12 +1,13 @@
 /* 몽픽 서비스 워커 — 홈 화면 앱 설치 + 최신 화면/데이터 우선
    · HTML·JS·CSS·JSON은 항상 네트워크를 먼저 보고, 오프라인일 때만 캐시를 쓴다
    · 아이콘·정적 이미지만 캐시 우선으로 빠르게 연다 */
-const VERSION = 'mongpick-v5';
+const VERSION = 'mongpick-v6';
 const SHELL = [
   './',
   './index.html',
-  './app.js?v=5',
-  './style.css?v=5',
+  './privacy.html',
+  './app.js?v=6',
+  './style.css?v=6',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

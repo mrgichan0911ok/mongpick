@@ -1305,6 +1305,12 @@
     return out.slice(0, n);
   }
 
+  /* 결과 공유 — 시스템 공유 시트(없으면 클립보드 복사)에 쓸 문구 */
+  const SHARE_URL = 'https://mrgichan0911ok.github.io/mongpick/';
+  function resultsShareText(nums) {
+    return `몽픽에서 뽑은 이번 주 번호: ${nums.join(' ')}\n${SHARE_URL}`;
+  }
+
   function comboShareText(ctx, nums, idx) {
     const lines = [`몽픽 ${META.next_round}회 추천 ${idx + 1}`, nums.join(' · ')];
     if (ctx.text) lines.push(`${ctx.mode === 'sign' ? '오늘 본 것' : '꿈'}: ${ctx.text.slice(0, 60)}`);
@@ -1343,8 +1349,8 @@
       ${fixedLine ? `<p class="pick-line sub">${esc(fixedLine)}</p>` : ''}
       <div class="pick-actions">
         <button type="button" class="ghost-btn js-copy" data-copy="${esc(txt)}">번호 복사</button>
-        <button type="button" class="ghost-btn js-share" data-copy="${esc(txt)}">공유</button>
         <button type="button" class="ghost-btn js-save-image">이미지 저장</button>
+        <button type="button" class="ghost-btn js-share-now" data-share="${esc(top.nums.join(' '))}">공유하기</button>
       </div>
     </div>`;
   }
@@ -2315,14 +2321,21 @@
         else toast('복사에 실패했습니다');
       });
     });
-    $$('.js-share', scope).forEach((b) => {
+    $$('.js-share-now', scope).forEach((b) => {
       b.addEventListener('click', async () => {
-        const text = b.dataset.copy || '';
-        if (navigator.share) {
-          try { await navigator.share({ title: '몽픽 추천 조합', text }); return; } catch (e) { /* 취소 */ }
+        const nums = String(b.dataset.share || '').trim().split(/\s+/).filter(Boolean);
+        const text = nums.length ? resultsShareText(nums) : '';
+        if (!text) return;
+        if (typeof navigator.share === 'function') {
+          try {
+            await navigator.share({ title: '몽픽 — 어젯밤 꿈을 번호로', text, url: SHARE_URL });
+            return;
+          } catch (err) {
+            if (err && err.name === 'AbortError') return;   /* 이용자가 그냥 닫음 */
+          }
         }
         const ok = await copyText(text);
-        toast(ok ? '공유 대신 복사했습니다' : '공유에 실패했습니다');
+        toast(ok ? '공유 문구를 복사했어요 — 붙여 넣어 보내세요' : '공유에 실패했어요');
       });
     });
     $$('.js-save-image', scope).forEach((b) => b.addEventListener('click', () => saveResultImage()));
@@ -3424,6 +3437,7 @@
     state: STATE, meta: META, data: D, saju: SAJU,
     analyze, buildCombos, dreamFortune, statsOf, acValue,
     cardCanvas, makeCardBlob, saveResultImage, setFixed, setExcluded, syncNumberGrids,
+    share: { url: SHARE_URL, text: resultsShareText },
     runDream, runSign, runBalance,
     tickets: {
       load: loadTickets, save: saveTickets, remember: rememberTicket,
