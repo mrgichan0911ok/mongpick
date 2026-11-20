@@ -1,0 +1,6 @@
+# 공개 저장소에는 올리지 않는 파일 (검사 목록·캡처에 외부 출처 문자열이 들어 있음)
+test_app.py
+preview_*.png
+__pycache__/
+*.pyc
+.DS_Store
