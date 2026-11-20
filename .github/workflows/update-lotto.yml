@@ -1,0 +1,43 @@
+name: 회차 결과 자동 갱신
+
+# 토요일 20:45 KST(= 11:45 UTC)에 최신 회차 결과를 받아 lotto-results.json에 커밋한다.
+# 추첨 직후 결과가 아직 안 올라왔으면 몇 분 간격으로 다시 확인한다.
+on:
+  schedule:
+    - cron: '45 11 * * 6'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lotto-results
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 최신 회차 받아 lotto-results.json 갱신
+        env:
+          MONG_PICK_WAIT: '240'   # 4분
+          MONG_PICK_TRIES: '5'    # 최대 5번(약 16분) 확인
+        run: python3 scripts/update-lotto.py
+
+      - name: 바뀐 게 있으면 커밋
+        run: |
+          if [ -z "$(git status --porcelain lotto-results.json)" ]; then
+            echo "새 회차 없음 — 커밋하지 않습니다."
+            exit 0
+          fi
+          git config user.name "mongpick-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lotto-results.json
+          git commit -m "chore: 회차 결과 자동 갱신 ($(date -u +%Y-%m-%dT%H:%MZ))"
+          git push
