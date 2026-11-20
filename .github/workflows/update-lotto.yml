@@ -26,8 +26,10 @@ jobs:
 
       - name: 최신 회차 받아 lotto-results.json 갱신
         env:
-          MONG_PICK_WAIT: '240'   # 4분
-          MONG_PICK_TRIES: '5'    # 최대 5번(약 16분) 확인
+          MONG_PICK_WAIT: '240'   # 4분 간격으로
+          # 정기 실행은 결과가 늦게 올라올 수 있어 최대 5번(약 16분) 확인하고,
+          # 손으로 돌릴 때는 한 번만 본다.
+          MONG_PICK_TRIES: ${{ github.event_name == 'schedule' && '5' || '1' }}
         run: python3 scripts/update-lotto.py
 
       - name: 바뀐 게 있으면 커밋
