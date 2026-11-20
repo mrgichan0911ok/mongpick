@@ -1941,11 +1941,11 @@
 
   function reasonEmptyHTML() {
     return `<div class="card reason-empty">
-      <p class="re-lead">먼저 <b>꿈</b>이나 <b>꿈 없이</b> 탭에서 번호를 뽑아 주세요.</p>
+      <p class="re-lead">먼저 <b>꿈</b>이나 <b>운세 뽑기</b> 탭에서 번호를 뽑아 주세요.</p>
       <p class="micro">뽑고 나면 왜 이 번호가 나왔는지, 이 페이지에서 하나씩 풀어 드려요.</p>
       <div class="re-actions">
         <button type="button" class="ghost-btn js-go-tab" data-tab="dream">꿈 탭으로</button>
-        <button type="button" class="ghost-btn js-go-tab" data-tab="nodream">꿈 없이 탭으로</button>
+        <button type="button" class="ghost-btn js-go-tab" data-tab="nodream">운세 뽑기 탭으로</button>
       </div>
     </div>`;
   }
@@ -2974,8 +2974,10 @@
         · 한 주(일→토) 동안 요일별로 누적되고, 토요일 추첨 뒤 일요일에 새 회차로 넘어간다
         · 위쪽 요일 칩으로 `전체` 또는 그 요일 사례만 골라 본다
      ========================================================= */
-  const FEED = { cases: [], updated: '', round: 0, week: [], day: 'all' };
+  const FEED = { cases: [], updated: '', round: 0, week: [], day: '' };  /* day: '' = 아직 안 골랐다 → 최신 요일이 기본 */
   const DAY_ORDER = ['일', '월', '화', '수', '목', '금', '토'];
+  /* 카드마다 붙는 출처 한 줄 — 이 문구 하나만 확정 표기, 다른 외부 이름은 쓰지 않는다 */
+  const FEED_SOURCE = '출처: 국내 꿈해몽 커뮤니티 실제 사연 재구성';
 
   function feedCaseOk(c) {
     return !!(c && c.id && c.theme && Array.isArray(c.story) && c.story.length
@@ -3018,6 +3020,13 @@
     return md && day ? md + '(' + day + ')' : (c.dayLabel || day || '');
   }
 
+  /* 탭에 들어올 때 기본으로 보여 줄 요일 — 이번 회차에서 가장 최근 사례가 있는 요일 */
+  function defaultFeedDay(week) {
+    let latest = '';
+    (week || []).forEach((c) => { const d = String(c.date || ''); if (d > latest) latest = d; });
+    return (latest && dayOfDate(latest)) || 'all';
+  }
+
   async function loadFeed() {
     const box = $('#dream-feed');
     if (!box) return;
@@ -3030,7 +3039,7 @@
     } catch (e) {
       FEED.cases = [];
     }
-    FEED.day = 'all';
+    FEED.day = '';
     renderFeed();
   }
 
@@ -3126,6 +3135,7 @@
         <span class="dc-teaser">${esc(teaser)}</span>
         <span class="dc-peek">${peek}</span>
         <span class="dc-more">펼쳐 보기</span>
+        <span class="dc-src">${FEED_SOURCE}</span>
       </summary>
       <div class="dc-body">
         ${when ? `<p class="dc-when">${esc(when)}에 올라온 꿈</p>` : ''}
@@ -3148,6 +3158,7 @@
     const week = feedWeekList();
     const byDay = {};
     week.forEach((c) => { const d = feedCaseDay(c); byDay[d] = (byDay[d] || 0) + 1; });
+    if (!FEED.day) FEED.day = defaultFeedDay(week);
     if (FEED.day !== 'all' && !byDay[FEED.day]) FEED.day = 'all';
     renderDayBar(week);
     renderWeekLine(week);
@@ -3199,7 +3210,11 @@
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
     if (name === 'nodream') updateBirthHint();
-    if (name === 'today' && !FEED.cases.length) loadFeed();
+    /* 오늘의 꿈에 들어오면 늘 최신 요일 사례부터 — `전체`는 눌러서 본다 */
+    if (name === 'today') {
+      FEED.day = '';
+      if (FEED.cases.length) renderFeed(); else loadFeed();
+    }
     if (name === 'reason') renderReasonPage();
     if (name === 'trust') { renderTickets(); refreshTickets(); }
   }

@@ -1,7 +1,7 @@
 /* 몽픽 서비스 워커 — 홈 화면 앱 설치 + 최신 결과 우선
    · 결과·데이터(JSON)는 항상 네트워크를 먼저 보고, 실패했을 때만 캐시를 쓴다
    · 화면 파일(HTML·JS·CSS·아이콘)은 캐시를 먼저 쓰되 뒤에서 조용히 새 판으로 바꾼다 */
-const VERSION = 'mongpick-v3';
+const VERSION = 'mongpick-v4';
 const SHELL = [
   './',
   './index.html',
