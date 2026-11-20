@@ -2971,12 +2971,51 @@
         · dreams.json: 5~6줄 꿈 이야기 + 고정 6수 + 왜 그 수인지
         · `이 번호 담기` → 번호함(localStorage)에 이번 회차로 저장 + 토스트
         · 여기서 번호를 다시 뽑지 않는다(카드의 수와 설명이 어긋나지 않게)
+        · 한 주(일→토) 동안 요일별로 누적되고, 토요일 추첨 뒤 일요일에 새 회차로 넘어간다
+        · 위쪽 요일 칩으로 `전체` 또는 그 요일 사례만 골라 본다
      ========================================================= */
-  const FEED = { cases: [], updated: '' };
+  const FEED = { cases: [], updated: '', round: 0, week: [], day: 'all' };
+  const DAY_ORDER = ['일', '월', '화', '수', '목', '금', '토'];
 
   function feedCaseOk(c) {
     return !!(c && c.id && c.theme && Array.isArray(c.story) && c.story.length
       && Array.isArray(c.nums) && c.nums.length === 6 && c.nums.every((n) => n >= 1 && n <= 45));
+  }
+
+  /* YYYY-MM-DD → 요일 한 글자 (일·월·화·수·목·금·토) */
+  function dayOfDate(dateStr) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ''))) return '';
+    return DAY_ORDER[new Date(dateStr + 'T00:00:00+09:00').getDay()] || '';
+  }
+  /* YYYY-MM-DD → 11/20 */
+  function mdOfDate(dateStr) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || ''));
+    return m ? Number(m[2]) + '/' + Number(m[3]) : '';
+  }
+  function shiftYmd(dateStr, days) {
+    const t = new Date(dateStr + 'T00:00:00+09:00').getTime() + days * 86400000;
+    const d = new Date(t + 9 * 3600 * 1000);
+    const p = (v) => String(v).padStart(2, '0');
+    return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate());
+  }
+  /* 그 날짜가 속한 회차 — 일요일부터 토요일까지 한 주의 토요일 추첨 회차 */
+  function roundOfDate(dateStr) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ''))) return 0;
+    const t = new Date(dateStr + 'T00:00:00+09:00').getTime();
+    const start = new Date(ROUND_ANCHOR.date + 'T00:00:00+09:00').getTime() - 6 * 86400000;
+    return ROUND_ANCHOR.round + Math.floor((t - start) / WEEK_MS);
+  }
+  function feedCaseRound(c) {
+    return Number(c.round) || (c.date ? roundOfDate(c.date) : 0);
+  }
+  function feedCaseDay(c) {
+    return c.day || dayOfDate(c.date) || '';
+  }
+  /* 카드에 붙는 `11/20(금)` — 날짜가 없으면 데이터의 dayLabel을 그대로 */
+  function feedDayText(c) {
+    const md = mdOfDate(c.date);
+    const day = feedCaseDay(c);
+    return md && day ? md + '(' + day + ')' : (c.dayLabel || day || '');
   }
 
   async function loadFeed() {
@@ -2991,7 +3030,69 @@
     } catch (e) {
       FEED.cases = [];
     }
+    FEED.day = 'all';
     renderFeed();
+  }
+
+  /* 지금 보여 줄 회차 — 이번 회차 사례가 있으면 그 회차,
+     일요일 리셋 직후처럼 아직 없으면 파일에 있는 가장 최근 회차(지난 회차)를 보여 준다 */
+  function feedRound() {
+    const cur = Number(META.next_round) || 0;
+    const rounds = FEED.cases.map(feedCaseRound).filter((r) => r > 0);
+    if (rounds.indexOf(cur) >= 0) return cur;
+    return rounds.length ? Math.max.apply(null, rounds) : cur;
+  }
+
+  /* 이번 회차(한 주) 사례를 최신 날짜부터 — 같은 날은 파일 순서 그대로 */
+  function feedWeekList() {
+    FEED.round = feedRound();
+    FEED.week = FEED.cases
+      .map((c, i) => ({ c: c, i: i }))
+      .filter((x) => feedCaseRound(x.c) === FEED.round)
+      .sort((a, b) => String(b.c.date || '').localeCompare(String(a.c.date || '')) || a.i - b.i)
+      .map((x) => x.c);
+    return FEED.week;
+  }
+
+  /* 요일 칩 바 — 전체 + 일~토, 사례가 있는 요일엔 건수 배지 */
+  function renderDayBar(week) {
+    const bar = $('#day-bar');
+    if (!bar) return;
+    const count = {};
+    DAY_ORDER.forEach((d) => { count[d] = 0; });
+    week.forEach((c) => { const d = feedCaseDay(c); if (d in count) count[d] += 1; });
+    const on = (d) => (FEED.day === d ? ' is-on' : '');
+    const allOn = FEED.day === 'all';
+    const chips = ['<button type="button" class="daychip' + (allOn ? ' is-on' : '') + '"'
+      + ' data-day="all" aria-pressed="' + allOn + '" data-count="' + week.length + '">'
+      + '전체<b class="daychip-n">' + week.length + '</b></button>'];
+    DAY_ORDER.forEach((d) => {
+      const n = count[d];
+      if (!n) {
+        chips.push('<button type="button" class="daychip is-empty" data-day="' + d + '"'
+          + ' aria-pressed="false" data-count="0" aria-label="' + d + '요일 · 아직 사례 없음"'
+          + ' title="아직 이 요일 꿈 사례가 올라오지 않았어요">' + d + '</button>');
+        return;
+      }
+      const first = week.filter((c) => feedCaseDay(c) === d)[0];
+      const tip = first.dayLabel || (mdOfDate(first.date) + '(' + d + ')');
+      chips.push('<button type="button" class="daychip' + on(d) + '" data-day="' + d + '"'
+        + ' aria-pressed="' + (FEED.day === d) + '" data-count="' + n + '"'
+        + ' title="' + esc(d + '요일 · ' + tip) + '">' + d
+        + '<b class="daychip-n">' + n + '</b></button>');
+    });
+    bar.innerHTML = chips.join('');
+  }
+
+  function renderWeekLine(week) {
+    const el = $('#feed-week');
+    if (!el) return;
+    const round = FEED.round;
+    const end = drawDateOf(round);
+    const start = shiftYmd(end, -6);
+    const past = Number(META.next_round) !== round ? '지난 회차 · ' : '';
+    el.textContent = past + round + '회 · ' + mdOfDate(start) + '(' + dayOfDate(start) + ')~'
+      + mdOfDate(end) + '(' + dayOfDate(end) + ') 모은 사례 ' + week.length + '건';
   }
 
   function feedTicketText(c) {
@@ -3016,15 +3117,18 @@
         }</div></details>`
       : '';
     const saved = feedSaved(c);
-    return `<details class="dc" data-id="${esc(c.id)}">
+    const dayTxt = feedDayText(c);
+    const when = c.dayLabel || (feedCaseDay(c) ? feedCaseDay(c) + '요일' : '');
+    return `<details class="dc" data-id="${esc(c.id)}" data-day="${esc(feedCaseDay(c))}" data-date="${esc(c.date || '')}">
       <summary class="dc-sum">
-        <span class="dc-kicker">오늘의 꿈 사례 · #${esc(c.theme)}</span>
+        <span class="dc-kicker">오늘의 꿈 사례 · #${esc(c.theme)}${dayTxt ? ' · ' + esc(dayTxt) : ''}</span>
         <span class="dc-title">${esc(c.title)}</span>
         <span class="dc-teaser">${esc(teaser)}</span>
         <span class="dc-peek">${peek}</span>
         <span class="dc-more">펼쳐 보기</span>
       </summary>
       <div class="dc-body">
+        ${when ? `<p class="dc-when">${esc(when)}에 올라온 꿈</p>` : ''}
         <div class="dc-story">${lines}</div>
         <div class="dc-nums">${balls}</div>
         ${why ? `<div class="dc-why"><p class="dc-why-head">왜 이 번호예요?</p>${why}${ballFold}</div>` : ''}
@@ -3041,11 +3145,31 @@
   function renderFeed() {
     const box = $('#dream-feed');
     if (!box) return;
-    if (!FEED.cases.length) {
+    const week = feedWeekList();
+    const byDay = {};
+    week.forEach((c) => { const d = feedCaseDay(c); byDay[d] = (byDay[d] || 0) + 1; });
+    if (FEED.day !== 'all' && !byDay[FEED.day]) FEED.day = 'all';
+    renderDayBar(week);
+    renderWeekLine(week);
+    if (!week.length) {
       box.innerHTML = '<p class="feed-empty">오늘의 사례를 불러오지 못했어요. 잠시 뒤에 다시 열어 주세요.</p>';
       return;
     }
-    box.innerHTML = FEED.cases.map(feedCardHTML).join('');
+    const list = FEED.day === 'all' ? week : week.filter((c) => feedCaseDay(c) === FEED.day);
+    box.innerHTML = list.map(feedCardHTML).join('');
+  }
+
+  /* 요일 칩 — 사례가 있는 요일만 골라 보고, 빈 요일은 안내만 */
+  function pickFeedDay(day) {
+    const chip = $('#day-bar .daychip[data-day="' + day + '"]');
+    if (chip && chip.dataset.count === '0') {
+      toast('아직 이 요일 꿈 사례가 올라오지 않았어요');
+      return false;
+    }
+    if (FEED.day === day) return true;
+    FEED.day = day;
+    renderFeed();
+    return true;
   }
 
   /* 담기 — 번호함에 이번 회차로 저장하고 토스트 */
@@ -3179,6 +3303,12 @@
     /* 이벤트 */
     $$('.tabbar .tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 
+    const dayBar = $('#day-bar');
+    if (dayBar) dayBar.addEventListener('click', (e) => {
+      const chip = e.target.closest('.daychip');
+      if (chip) pickFeedDay(chip.dataset.day);
+    });
+
     /* 오늘의 꿈 사례 — 카드 안 `이 번호 담기` */
     const feedBox = $('#dream-feed');
     if (feedBox) feedBox.addEventListener('click', (e) => {
@@ -3293,7 +3423,7 @@
     renderReasonPage, renderReasonCta, renderReasonSummary, renderReasonStep1, renderReasonStep2,
     renderReasonStep3, renderReasonStep4, briefSources, paperInner, calcInner, elemBarsHTML,
     feed: { data: FEED, load: loadFeed, render: renderFeed, add: addFeedTicket, saved: feedSaved,
-            text: feedTicketText }
+      day: pickFeedDay, round: feedRound, week: feedWeekList, text: feedTicketText }
   };
 
   document.addEventListener('DOMContentLoaded', init);
