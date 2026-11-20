@@ -1002,6 +1002,8 @@
 
     const excluded = new Set(o.excluded || []);
     excluded.forEach((n) => board.delete(n));
+    const fixed = new Set((o.fixed || []).map(Number)
+      .filter((n) => n >= 1 && n <= 45 && !excluded.has(n)));
 
     const pool = Array.from(board.values()).sort((a, b) => b.score - a.score);
     if (!pool.length) notes.push('상징 DB·원리 어느 쪽에서도 수를 잡지 못했습니다. 생일 라인과 균형 배분만으로 조합을 만듭니다.');
@@ -1010,7 +1012,7 @@
     matches.sort((a, b) => a.pos - b.pos);
     return {
       text, mode: o.mode, board, pool, matches, principleHits, direct, colorHits,
-      seeds, exp, birthNums, excluded, notes, topKw, sajuVotes, saju: o.saju
+      seeds, exp, birthNums, excluded, fixed, notes, topKw, sajuVotes, saju: o.saju
     };
   }
 
@@ -1046,16 +1048,20 @@
     return true;
   }
   function drawCombo(rng, items, cfg, taken, maxScore, usage) {
+    /* 꼭 넣고 싶은 번호는 처음부터 자리에 넣고, 남은 칸만 근거로 고른다 */
+    const fixed = (cfg.fixed || []).filter((n) => n >= 1 && n <= 45);
+    const fixedSet = new Set(fixed);
     const weightOf = (p) => {
       const base = Math.pow(Math.max(p.score, 0) / maxScore, cfg.pow || 1.5) + 0.02;
       const used = usage ? (usage[p.n] || 0) : 0;
       return base / (1 + 1.15 * used) + 0.004;
     };
     for (let attempt = 0; attempt < 420; attempt++) {
-      const chosen = [];
+      const chosen = fixed.slice();
       let guard = 0;
       while (chosen.length < 6 && guard++ < 240) {
-        const cand = items.filter((p) => !chosen.includes(p.n) && softOk(chosen, p.n));
+        let cand = items.filter((p) => !chosen.includes(p.n) && softOk(chosen, p.n));
+        if (!cand.length) cand = items.filter((p) => !chosen.includes(p.n));
         if (!cand.length) break;
         const w = cand.map((p) => {
           let v = weightOf(p);
@@ -1067,16 +1073,33 @@
       }
       if (chosen.length < 6) continue;
       const nums = chosen.slice().sort((a, b) => a - b);
-      if (!finalOk(nums, cfg)) continue;
-      if (taken.some((t) => t.filter((v) => nums.includes(v)).length > 2)) continue;
+      /* 고른 수가 많으면 홀짝·합계 조건을 모두 맞추기 어려우니, 꾸준히 시도한 뒤에는
+         그 조건을 풀고 고른 수가 꼭 들어가는 것을 먼저 지킨다 */
+      if ((!fixed.length || attempt < 260) && !finalOk(nums, cfg)) continue;
+      if (taken.some((t) => t.filter((v) => nums.includes(v) && !fixedSet.has(v)).length > 2)) continue;
       return nums;
     }
     return null;
+  }
+  /* 어떤 이유로든 조합에 고른 수가 모자라면 마지막에 반드시 채워 넣는다 */
+  function withFixed(nums, fixed, banned) {
+    if (!fixed.length) return nums;
+    const out = new Set(fixed);
+    nums.forEach((n) => { if (out.size < 6) out.add(n); });
+    for (let n = 1; n <= 45 && out.size < 6; n++) if (!banned.has(n)) out.add(n);
+    if (out.size > 6) {
+      const keep = fixed.slice();
+      Array.from(out).forEach((n) => { if (keep.length < 6 && keep.indexOf(n) < 0) keep.push(n); });
+      return uniq(keep).slice(0, 6).sort((a, b) => a - b);
+    }
+    return Array.from(out).sort((a, b) => a - b);
   }
   function buildCombos(ctx, seed, opts) {
     const o = Object.assign({ count: 5 }, opts || {});
     const rng = mulberry32(seed);
     const banned = ctx.excluded || new Set();
+    const fixed = uniq((o.fixed || []).map(Number).filter((n) => n >= 1 && n <= 45 && !banned.has(n)))
+      .sort((a, b) => a - b).slice(0, FIXED_MAX);
     const pool = ctx.pool.filter((p) => !banned.has(p.n));
     if (pool.length < 8) {
       for (let n = 1; n <= 45; n++) {
@@ -1084,7 +1107,7 @@
         if (!pool.some((p) => p.n === n)) pool.push({ n, score: 1, primary: 0, posTypes: new Set(), sources: [] });
       }
     }
-    if (pool.length < 6) return [];
+    if (pool.length < 6 - fixed.length) return [];
     const maxScore = Math.max.apply(null, pool.map((p) => p.score).concat([1]));
     const lineSet = new Set();
     ctx.seeds.forEach((s) => {
@@ -1101,6 +1124,7 @@
     STRATEGIES.forEach((st) => {
       if (out.length >= o.count) return;
       const cfg = Object.assign({}, st);
+      cfg.fixed = fixed;
       if (o.minAC) cfg.minAC = Math.max(cfg.minAC, o.minAC);
       if (o.strict) cfg.strict = true;
       let items = pool;
@@ -1115,12 +1139,13 @@
         nums = drawCombo(rng, items, Object.assign({}, cfg, { minAC: Math.max(floorAC, cfg.minAC - relax) }), taken, maxScore, usage);
       }
       if (!nums) nums = drawCombo(rng, pool, Object.assign({}, cfg, { minAC: 0, strict: false, endDigit: null, lineSet: null, pow: 0.2 }), taken, maxScore, usage);
-      if (nums) { taken.push(nums); nums.forEach((n) => { usage[n] = (usage[n] || 0) + 1; }); out.push({ nums, strat: st }); }
+      if (nums) { nums = withFixed(nums, fixed, banned); taken.push(nums); nums.forEach((n) => { usage[n] = (usage[n] || 0) + 1; }); out.push({ nums, strat: st }); }
     });
     let guard = 0;
     while (out.length < o.count && guard++ < 40) {
-      const nums = drawCombo(rng, pool, { minAC: o.minAC || 6, pow: 0.3, strict: !!o.strict }, taken, maxScore, usage);
-      if (!nums) break;
+      const drawn = drawCombo(rng, pool, { minAC: o.minAC || 6, pow: 0.3, strict: !!o.strict, fixed }, taken, maxScore, usage);
+      if (!drawn) break;
+      const nums = withFixed(drawn, fixed, banned);
       taken.push(nums);
       nums.forEach((n) => { usage[n] = (usage[n] || 0) + 1; });
       out.push({ nums, strat: { key: 'fill', label: '보충 균형', note: '후보가 부족해 균형으로 채움' } });
@@ -1304,17 +1329,22 @@
     else head = `${where} 뚜렷한 단어를 못 찾아 오늘 기운으로 뽑았어요.`;
     const birth = ctx.mode !== 'balance' && ctx.birthNums && ctx.birthNums.length
       ? `생일 숫자 ${uniq(ctx.birthNums).slice(0, 3).join('·')}도 함께 봤어요.` : '';
+    const fixedNums = ctx.fixed ? Array.from(ctx.fixed).sort((a, b) => a - b) : [];
+    const fixedLine = fixedNums.length
+      ? `직접 고른 번호 ${fixedNums.join('·')} — 5조합 모두에 넣었어요.` : '';
     const hasNatal = !!(ctx.saju && ctx.saju.natal);
     const pv = fortune ? plainVerdict(fortune, hasNatal) : { text: ctx.mode === 'balance' ? '균형 조합' : '오늘의 조합', cls: 'mixed' };
     const txt = comboShareText(ctx, top.nums, 0);
     return `<div class="card pick-card">
       <div class="pick-top"><span class="pick-label">오늘의 추천 번호</span><span class="badge badge-${pv.cls}">${esc(pv.text)}</span></div>
-      <div class="pick-balls">${top.nums.map((n, i) => `<span class="ball ${ballClass(n)}" style="animation-delay:${i * 45}ms" title="${esc(numberTitle(ctx, n))}">${n}</span>`).join('')}</div>
+      <div class="pick-balls">${top.nums.map((n, i) => `<span class="ball ${ballClass(n)}${fixedNums.indexOf(n) >= 0 ? ' is-pin' : ''}" style="animation-delay:${i * 45}ms" title="${esc(numberTitle(ctx, n))}">${n}</span>`).join('')}</div>
       <p class="pick-line">${head}</p>
       ${birth ? `<p class="pick-line sub">${esc(birth)}</p>` : ''}
+      ${fixedLine ? `<p class="pick-line sub">${esc(fixedLine)}</p>` : ''}
       <div class="pick-actions">
         <button type="button" class="ghost-btn js-copy" data-copy="${esc(txt)}">번호 복사</button>
         <button type="button" class="ghost-btn js-share" data-copy="${esc(txt)}">공유</button>
+        <button type="button" class="ghost-btn js-save-image">이미지 저장</button>
       </div>
     </div>`;
   }
@@ -1439,6 +1469,7 @@
         const cell = primaryMap.get(n);
         if (cell && cell.primary >= 2) cls.push('cross');
         if (ctx.excluded.has(n) && !seedNums.has(n)) cls.push('excluded');
+        if (ctx.fixed && ctx.fixed.has(n)) cls.push('is-pinned');
         const title = seedSet.get(n) || (cell ? cell.sources.slice(0, 3).map((s) => s.label).join(' / ') : '');
         html += `<td><div class="${cls.join(' ')}" title="${esc(title)}">${n}</div></td>`;
       }
@@ -1449,7 +1480,8 @@
       <span><i class="lg-seed"></i>출발점</span>
       <span><i class="lg-row"></i>가로 줄</span><span><i class="lg-col"></i>세로 칸</span>
       <span><i class="lg-diag"></i>대각선</span><span><i class="lg-end"></i>같은 끝자리</span>
-      <span><i class="lg-cross"></i>겹친 수</span></div>`;
+      <span><i class="lg-cross"></i>겹친 수</span>
+      ${ctx.fixed && ctx.fixed.size ? '<span><i class="lg-pin"></i>직접 고른 수</span>' : ''}</div>`;
 
     const chips = [];
     if (ctx.exp.rows.size) chips.push(`<span class="rule-chip">가로 <b>${ctx.exp.rows.size}</b>줄</span>`);
@@ -1458,6 +1490,7 @@
     if (ctx.exp.ends.size) chips.push(`<span class="rule-chip">같은 끝자리 <b>${ctx.exp.ends.size}</b>수</span>`);
     chips.push(`<span class="rule-chip">겹친 수 <b>${ctx.pool.filter((p) => p.primary >= 2).length}</b></span>`);
     if (ctx.excluded.size) chips.push(`<span class="rule-chip">뺀 수 <b>${ctx.excluded.size}</b></span>`);
+    if (ctx.fixed && ctx.fixed.size) chips.push(`<span class="rule-chip">꼭 넣는 수 <b>${ctx.fixed.size}</b></span>`);
     html += `<div class="rule-chips">${chips.join('')}</div>`;
 
     return `<div class="card paper-card">${html}</div>
@@ -1743,8 +1776,12 @@
     const head = stepHead(2, '내 생일과 오늘 기운이 더한 힘',
       '생일 숫자는 번호판의 출발점이 되고, 얇거나 넘치는 기운은 어느 쪽 수에 힘을 줄지 정해요.');
     const ntl = saju && saju.natal;
+    const fixedNums2 = ctx.fixed ? Array.from(ctx.fixed).sort((a, b) => a - b) : [];
+    const fixedLine2 = fixedNums2.length
+      ? `<p class="rw-why">직접 고른 수 <b>${fixedNums2.join('·')}</b> — 이 수들은 5조합 모두에 들어가게 했어요.</p>` : '';
     if (!ntl) {
       return `<section class="reason-step">${head}
+        ${fixedLine2}
         <p class="rw-why">생일을 넣으면 내 기운 반영 설명도 함께 나와요.</p>
         <p class="rw-meta">생일을 넣지 않으면 꿈 단어와 오늘 날짜만으로 뽑아요.</p>
         <div class="step-actions"><button type="button" class="ghost-btn js-open-birth">생일 넣으러 가기</button></div>
@@ -1799,6 +1836,7 @@
     const ruleLine = fortune && fortune.rule
       ? `<div class="reason-tip"><b>${esc(fortune.rule.headline)}</b><span>오늘 해 볼 일 — ${esc(fortune.rule.action)}</span></div>` : '';
     return `<section class="reason-step">${head}
+      ${fixedLine2}
       ${birthBalls}
       <p class="rw-why">${birthLine}</p>
       ${bd}${energy}${todayLine}${ruleLine}
@@ -1847,14 +1885,20 @@
   }
 
   function ballRow(ctx, n) {
+    const pinned = !!(ctx.fixed && ctx.fixed.has(n));
     const b = briefSources(ctx, n);
-    const why = (b && b.parts.length) ? b.parts.join(' + ') : '출발점에서 이어진 수';
+    const why = pinned
+      ? ('직접 고른 수' + ((b && b.parts.length) ? ' + ' + b.parts.join(' + ') : ''))
+      : ((b && b.parts.length) ? b.parts.join(' + ') : '출발점에서 이어진 수');
     const cross = b ? b.cross : 0;
-    const chip = cross >= 2
-      ? '<span class="br-chip cross">근거 겹침</span>'
-      : (b && !b.hasDirect ? '<span class="br-chip bal">균형 자리</span>' : '');
+    const chip = pinned
+      ? '<span class="br-chip pin">직접 고른 수</span>'
+      : (cross >= 2
+        ? '<span class="br-chip cross">근거 겹침</span>'
+        : (b && !b.hasDirect ? '<span class="br-chip bal">균형 자리</span>' : ''));
     let meta;
-    if (cross >= 2) meta = `직접 근거 ${cross}개가 같은 수를 가리켜 힘이 센 수로 뽑혔어요.`;
+    if (pinned) meta = '직접 골라서 5조합 모두에 넣은 수예요.';
+    else if (cross >= 2) meta = `직접 근거 ${cross}개가 같은 수를 가리켜 힘이 센 수로 뽑혔어요.`;
     else if (b && !b.hasDirect) meta = '직접 근거는 약해서, 홀짝·번호대·간격을 맞추는 자리에서 들어갔어요.';
     else if (b && b.posCount) meta = '근거 하나에 자리(줄·끝자리)가 더해져서 들어왔어요.';
     else meta = '한 가지 근거에서 온 수예요.';
@@ -1943,6 +1987,8 @@
     birth: { y: null, m: null, d: null, hour: null },
     people: [],
     excluded: new Set(),
+    fixed: new Set(),
+    buyOnly: false,
     saju: null,
     fortune: null,
     last: null,
@@ -1955,7 +2001,8 @@
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify({
         birth: STATE.birth, people: STATE.people,
-        excluded: Array.from(STATE.excluded), last: STATE.last
+        excluded: Array.from(STATE.excluded), fixed: Array.from(STATE.fixed),
+        buyOnly: !!STATE.buyOnly, last: STATE.last
       }));
     } catch (e) { /* 저장 실패는 무시 */ }
   }
@@ -1966,6 +2013,8 @@
       if (s.birth) STATE.birth = Object.assign(STATE.birth, s.birth);
       if (s.people) STATE.people = s.people;
       if (s.excluded) STATE.excluded = new Set(s.excluded);
+      if (s.fixed) STATE.fixed = new Set(Array.from(s.fixed).map(Number).filter((n) => n >= 1 && n <= 45));
+      if (typeof s.buyOnly === 'boolean') STATE.buyOnly = s.buyOnly;
       if (s.last) STATE.last = s.last;
     } catch (e) { /* ignore */ }
   }
@@ -1986,32 +2035,76 @@
     if (value != null) sel.value = String(value);
   }
 
-  function buildExcludeGrid() {
-    const grid = $('#exclude-grid');
+  const FIXED_MAX = 5;
+
+  function buildNumberGrid(grid, kind) {
+    if (!grid) return;
     let html = '';
-    for (let n = 1; n <= 45; n++) html += `<button type="button" class="mini-cell" data-n="${n}" aria-pressed="false" aria-label="${n}번 제외">${n}</button>`;
+    const what = kind === 'fixed' ? '꼭 넣기' : '빼기';
+    for (let n = 1; n <= 45; n++) html += `<button type="button" class="mini-cell" data-n="${n}" aria-pressed="false" aria-label="${n}번 ${what}">${n}</button>`;
     grid.innerHTML = html;
     grid.addEventListener('click', (e) => {
       const b = e.target.closest('.mini-cell');
       if (!b) return;
       const n = Number(b.dataset.n);
-      if (STATE.excluded.has(n)) { STATE.excluded.delete(n); b.classList.remove('is-excluded'); b.setAttribute('aria-pressed', 'false'); }
-      else { STATE.excluded.add(n); b.classList.add('is-excluded'); b.setAttribute('aria-pressed', 'true'); }
-      syncExcludeNote();
-      saveState();
+      if (kind === 'fixed') setFixed(n, !STATE.fixed.has(n));
+      else setExcluded(n, !STATE.excluded.has(n));
     });
   }
-  function syncExcludeNote() {
-    const note = $('#exclude-note');
-    const arr = Array.from(STATE.excluded).sort((a, b) => a - b);
-    if (note) note.textContent = arr.length
-      ? `${arr.slice(0, 5).join('·')}${arr.length > 5 ? ' 외 ' + (arr.length - 5) + '개' : ''} 빼기`
-      : '선택';
+
+  /* 꼭 넣고 싶은 번호 — 빼고 싶은 번호와는 겹치지 않게 서로 비켜 준다 */
+  function setFixed(n, on) {
+    if (on) {
+      if (!STATE.fixed.has(n) && STATE.fixed.size >= FIXED_MAX) {
+        toast(`꼭 넣고 싶은 번호는 ${FIXED_MAX}개까지 골라요`);
+        syncNumberGrids();
+        return;
+      }
+      STATE.fixed.add(n);
+      if (STATE.excluded.delete(n)) toast('빼기에서 빼고 꼭 넣는 번호로 바꿨어요');
+    } else {
+      STATE.fixed.delete(n);
+    }
+    syncNumberGrids();
+    saveState();
+  }
+  function setExcluded(n, on) {
+    if (on) {
+      STATE.excluded.add(n);
+      if (STATE.fixed.delete(n)) toast('꼭 넣는 번호에서 빼고 제외로 바꿨어요');
+    } else {
+      STATE.excluded.delete(n);
+    }
+    syncNumberGrids();
+    saveState();
+  }
+
+  function syncNumberGrids() {
+    const fx = Array.from(STATE.fixed).sort((a, b) => a - b);
+    const ex = Array.from(STATE.excluded).sort((a, b) => a - b);
+    $$('.js-fixed-grid .mini-cell').forEach((b) => {
+      const on = STATE.fixed.has(Number(b.dataset.n));
+      b.classList.toggle('is-fixed', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
     $$('#exclude-grid .mini-cell').forEach((b) => {
       const on = STATE.excluded.has(Number(b.dataset.n));
       b.classList.toggle('is-excluded', on);
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
+    const fixedNote = $('#fixed-note');
+    if (fixedNote) fixedNote.textContent = fx.length
+      ? `${fx.slice(0, 5).join('·')}${fx.length > 5 ? ' 외 ' + (fx.length - 5) + '개' : ''} 넣기`
+      : '선택';
+    $$('.js-fixed-note').forEach((el) => {
+      el.textContent = fx.length
+        ? `${fx.slice(0, 3).join('·')}${fx.length > 3 ? ' 외 ' + (fx.length - 3) + '개' : ''} 넣기`
+        : '선택';
+    });
+    const exNote = $('#exclude-note');
+    if (exNote) exNote.textContent = ex.length
+      ? `${ex.slice(0, 5).join('·')}${ex.length > 5 ? ' 외 ' + (ex.length - 5) + '개' : ''} 빼기`
+      : '선택';
   }
 
   function personRow(p, idx) {
@@ -2113,11 +2206,12 @@
       birth: STATE.birth.d ? { month: STATE.birth.m, day: STATE.birth.d } : null,
       people: STATE.people,
       excluded: Array.from(STATE.excluded),
+      fixed: Array.from(STATE.fixed),
       mode: 'dream',
       saju, fortune
     });
-    const seed = hash32(text + '|' + JSON.stringify(STATE.birth) + '|' + STATE.people.map((p) => p.name + p.month + p.day).join(',') + '|' + Array.from(STATE.excluded).sort().join(','));
-    const combos = buildCombos(ctx, seed, { count: 5 });
+    const seed = hash32(text + '|' + JSON.stringify(STATE.birth) + '|' + STATE.people.map((p) => p.name + p.month + p.day).join(',') + '|' + Array.from(STATE.excluded).sort().join(',') + '|fx:' + Array.from(STATE.fixed).sort().join(','));
+    const combos = buildCombos(ctx, seed, { count: 5, fixed: Array.from(STATE.fixed) });
 
     const out = $('#dream-result');
     const saved = combos.length ? rememberTicket({ mode: 'dream', text, combos }) : null;
@@ -2126,6 +2220,7 @@
         renderVibe(fortune, saju, 'dream') + renderRest(ctx, combos)
       : renderNoCombo();
     STATE.reason = combos.length ? { ctx, fortune, combos, saju, mode: 'dream' } : null;
+    LAST_PICK = STATE.reason;
     renderReasonPage();
 
     STATE.last = {
@@ -2153,11 +2248,12 @@
       birth: STATE.birth.d ? { month: STATE.birth.m, day: STATE.birth.d } : null,
       people: STATE.people,
       excluded: Array.from(STATE.excluded),
+      fixed: Array.from(STATE.fixed),
       mode: 'sign',
       saju, fortune
     });
     const seed = hash32('sign|' + text + '|' + JSON.stringify(STATE.birth));
-    const combos = buildCombos(ctx, seed, { count: 5 });
+    const combos = buildCombos(ctx, seed, { count: 5, fixed: Array.from(STATE.fixed) });
     const out = $('#nodream-result');
     const saved = combos.length ? rememberTicket({ mode: 'sign', text, combos }) : null;
     out.innerHTML = combos.length
@@ -2165,6 +2261,7 @@
         renderVibe(fortune, saju, 'sign') + renderRest(ctx, combos)
       : renderNoCombo();
     STATE.reason = combos.length ? { ctx, fortune, combos, saju, mode: 'sign' } : null;
+    LAST_PICK = STATE.reason;
     renderReasonPage();
     STATE.last = { ts: Date.now(), round: META.next_round, dream: text.slice(0, 80), combos: combos.map((c) => ({ label: plainStrat(c.strat), nums: c.nums })) };
     saveState();
@@ -2188,11 +2285,12 @@
       birth: STATE.birth.d ? { month: STATE.birth.m, day: STATE.birth.d } : null,
       people: STATE.people,
       excluded: Array.from(STATE.excluded),
+      fixed: Array.from(STATE.fixed),
       mode: 'balance',
       saju
     });
-    const seed = hash32('bal|' + JSON.stringify(STATE.birth) + '|' + Array.from(STATE.excluded).sort().join(','));
-    const combos = buildCombos(ctx, seed, { count: 5, minAC: 8, strict: true });
+    const seed = hash32('bal|' + JSON.stringify(STATE.birth) + '|' + Array.from(STATE.excluded).sort().join(',') + '|fx:' + Array.from(STATE.fixed).sort().join(','));
+    const combos = buildCombos(ctx, seed, { count: 5, minAC: 8, strict: true, fixed: Array.from(STATE.fixed) });
     const out = $('#nodream-result');
     const saved = combos.length ? rememberTicket({ mode: 'balance', text: '생일만으로', combos }) : null;
     out.innerHTML = combos.length
@@ -2200,6 +2298,7 @@
         renderVibe(null, saju, 'balance') + renderRest(ctx, combos)
       : renderNoCombo();
     STATE.reason = combos.length ? { ctx, fortune: null, combos, saju, mode: 'balance' } : null;
+    LAST_PICK = STATE.reason;
     renderReasonPage();
     STATE.last = { ts: Date.now(), round: META.next_round, dream: '꿈 없이 · 생일', combos: combos.map((c) => ({ label: plainStrat(c.strat), nums: c.nums })) };
     saveState();
@@ -2226,8 +2325,236 @@
         toast(ok ? '공유 대신 복사했습니다' : '공유에 실패했습니다');
       });
     });
+    $$('.js-save-image', scope).forEach((b) => b.addEventListener('click', () => saveResultImage()));
     $$('.js-reason', scope).forEach((b) => b.addEventListener('click', () => switchTab('reason')));
     $$('.js-check-ticket', scope).forEach((b) => b.addEventListener('click', () => openTicketCheck()));
+  }
+
+  /* =========================================================
+     12-b. 결과 카드 이미지 — 인스타·카톡에 올리기 좋은 세로 카드
+        · 1080×1350 캔버스에 다크·골드 테마로 바로 그려서 PNG로 내려받는다
+     ========================================================= */
+  let LAST_PICK = null;
+  const CARD_FONT = '"Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif';
+  const BALL_FILL = { b1: '#f8c53d', b2: '#5ec8f2', b3: '#ff7f8a', b4: '#b9c2cf', b5: '#a9dd5b' };
+  const BALL_INK = { b1: '#2b1e00', b2: '#04222e', b3: '#2b0b0f', b4: '#1b2130', b5: '#15230a' };
+
+  function roundRectPath(g, x, y, w, h, r) {
+    g.beginPath();
+    g.moveTo(x + r, y);
+    g.arcTo(x + w, y, x + w, y + h, r);
+    g.arcTo(x + w, y + h, x, y + h, r);
+    g.arcTo(x, y + h, x, y, r);
+    g.arcTo(x, y, x + w, y, r);
+    g.closePath();
+  }
+  function wrapLines(g, text, maxW, maxLines) {
+    const lines = [];
+    let cur = '';
+    String(text || '').split('').forEach((ch) => {
+      const t = cur + ch;
+      if (cur && g.measureText(t).width > maxW) { lines.push(cur); cur = ch; }
+      else cur = t;
+    });
+    if (cur) lines.push(cur);
+    if (lines.length > maxLines) {
+      const keep = lines.slice(0, maxLines);
+      keep[maxLines - 1] = keep[maxLines - 1].slice(0, Math.max(1, keep[maxLines - 1].length - 1)) + '…';
+      return keep;
+    }
+    return lines;
+  }
+  function moonMark(g, cx, cy, r) {
+    const grad = g.createLinearGradient(cx - r, cy - r, cx + r, cy + r);
+    grad.addColorStop(0, '#8ea0ff');
+    grad.addColorStop(1, '#ffd479');
+    g.strokeStyle = grad;
+    g.lineWidth = Math.max(3, r * 0.14);
+    g.beginPath();
+    g.arc(cx, cy, r, 0, Math.PI * 2);
+    g.stroke();
+    g.fillStyle = grad;
+    g.beginPath();
+    g.arc(cx, cy, r * 0.78, Math.PI * 0.5, Math.PI * 1.5, false);
+    g.arc(cx + r * 0.42, cy, r * 0.78, Math.PI * 1.5, Math.PI * 0.5, true);
+    g.closePath();
+    g.fill();
+  }
+
+  function cardCanvas(pick) {
+    const P = pick || LAST_PICK;
+    const W = 1080, H = 1350;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const g = cv.getContext('2d');
+    if (!g) return cv;
+    const ctx = P ? P.ctx : null;
+    const fortune = P ? P.fortune : null;
+    const combos = P ? P.combos : null;
+    const nums = combos && combos.length ? combos[0].nums : [0, 0, 0, 0, 0, 0];
+
+    /* 배경 */
+    const bg = g.createLinearGradient(0, 0, W * 0.4, H);
+    bg.addColorStop(0, '#101728');
+    bg.addColorStop(0.55, '#080b14');
+    bg.addColorStop(1, '#05070d');
+    g.fillStyle = bg;
+    g.fillRect(0, 0, W, H);
+    const g1 = g.createRadialGradient(W * 0.22, -60, 40, W * 0.22, -60, 860);
+    g1.addColorStop(0, 'rgba(141,156,255,.34)');
+    g1.addColorStop(1, 'rgba(141,156,255,0)');
+    g.fillStyle = g1; g.fillRect(0, 0, W, H);
+    const g2 = g.createRadialGradient(W * 1.02, H * 0.12, 30, W * 1.02, H * 0.12, 700);
+    g2.addColorStop(0, 'rgba(255,212,121,.22)');
+    g2.addColorStop(1, 'rgba(255,212,121,0)');
+    g.fillStyle = g2; g.fillRect(0, 0, W, H);
+    const g3 = g.createRadialGradient(W * 0.5, H * 1.05, 40, W * 0.5, H * 1.05, 720);
+    g3.addColorStop(0, 'rgba(110,231,208,.16)');
+    g3.addColorStop(1, 'rgba(110,231,208,0)');
+    g.fillStyle = g3; g.fillRect(0, 0, W, H);
+
+    /* 테두리 */
+    g.strokeStyle = 'rgba(255,212,121,.28)';
+    g.lineWidth = 3;
+    roundRectPath(g, 36, 36, W - 72, H - 72, 46);
+    g.stroke();
+    g.strokeStyle = 'rgba(255,255,255,.06)';
+    g.lineWidth = 1;
+    roundRectPath(g, 52, 52, W - 104, H - 104, 38);
+    g.stroke();
+
+    /* 머리 */
+    moonMark(g, 116, 128, 30);
+    g.textAlign = 'left';
+    g.textBaseline = 'middle';
+    g.fillStyle = '#edf0f8';
+    g.font = `800 46px ${CARD_FONT}`;
+    g.fillText('몽픽', 166, 128);
+    g.textAlign = 'right';
+    g.fillStyle = '#ffd479';
+    g.font = `700 30px ${CARD_FONT}`;
+    g.fillText(`제${META.next_round}회`, W - 96, 128);
+    g.strokeStyle = 'rgba(255,255,255,.12)';
+    g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(96, 200); g.lineTo(W - 96, 200); g.stroke();
+
+    /* 무슨 수인지 */
+    g.textAlign = 'left';
+    g.fillStyle = '#98a1ba';
+    g.font = `700 28px ${CARD_FONT}`;
+    g.fillText('오늘의 추천 번호', 96, 276);
+
+    const summary = ctx
+      ? (ctx.mode === 'balance' ? '생일 숫자와 균형만으로 뽑았어요'
+        : (ctx.text ? String(ctx.text).slice(0, 70) : '오늘 기운으로 뽑았어요'))
+      : '오늘 기운으로 뽑았어요';
+    g.fillStyle = '#e6ebf8';
+    g.font = `600 38px ${CARD_FONT}`;
+    const lines = wrapLines(g, summary, W - 192, 2);
+    lines.forEach((ln, i) => g.fillText(ln, 96, 350 + i * 54));
+
+    /* 몇 번째 조합인지 · 추첨일 */
+    g.textAlign = 'left';
+    g.fillStyle = '#7f88a6';
+    g.font = `600 26px ${CARD_FONT}`;
+    g.fillText(`이번 주 1번째 조합 · ${META.next_draw_date} 추첨`, 96, 474);
+
+    /* 공 6개 */
+    const r = 66, gap = 24;
+    const total = r * 2 * 6 + gap * 5;
+    let x = (W - total) / 2 + r;
+    const cy = 620;
+    nums.forEach((n) => {
+      const key = ballClass(n);
+      g.beginPath();
+      g.arc(x, cy + 6, r, 0, Math.PI * 2);
+      g.fillStyle = 'rgba(0,0,0,.35)';
+      g.fill();
+      g.beginPath();
+      g.arc(x, cy, r, 0, Math.PI * 2);
+      g.fillStyle = BALL_FILL[key] || '#b9c2cf';
+      g.fill();
+      const hi = g.createLinearGradient(x, cy - r, x, cy + r);
+      hi.addColorStop(0, 'rgba(255,255,255,.28)');
+      hi.addColorStop(0.5, 'rgba(255,255,255,0)');
+      hi.addColorStop(1, 'rgba(0,0,0,.16)');
+      g.fillStyle = hi;
+      g.fill();
+      g.fillStyle = BALL_INK[key] || '#111827';
+      g.font = `800 40px ${CARD_FONT}`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText(String(n), x, cy + 2);
+      x += r * 2 + gap;
+    });
+
+    /* 한 줄 결말 + 기운 */
+    const natal = !!(ctx && ctx.saju && ctx.saju.natal);
+    const pv = fortune ? plainVerdict(fortune, natal)
+      : { text: (ctx && ctx.mode === 'balance') ? '균형 조합' : '오늘의 조합' };
+    g.textAlign = 'center';
+    g.font = `800 30px ${CARD_FONT}`;
+    const bw = g.measureText(pv.text).width + 64;
+    roundRectPath(g, (W - bw) / 2, 790, bw, 66, 33);
+    g.fillStyle = 'rgba(255,212,121,.12)';
+    g.fill();
+    g.strokeStyle = 'rgba(255,212,121,.38)';
+    g.lineWidth = 1.5;
+    g.stroke();
+    g.fillStyle = '#ffdf9d';
+    g.textBaseline = 'middle';
+    g.fillText(pv.text, W / 2, 824);
+
+    const head = fortune && fortune.rule && fortune.rule.headline
+      ? fortune.rule.headline
+      : (ctx && ctx.mode === 'balance' ? '홀짝 반반, 번호대 고루, 간격 넓게' : '오늘 기운과 꿈 단어로 골랐어요');
+    g.fillStyle = '#cdd4e6';
+    g.font = `600 34px ${CARD_FONT}`;
+    wrapLines(g, head, W - 240, 2).forEach((ln, i) => g.fillText(ln, W / 2, 934 + i * 48));
+
+    const fixedNums = ctx && ctx.fixed ? Array.from(ctx.fixed).sort((a, b) => a - b) : [];
+    const foot1 = fixedNums.length
+      ? `직접 고른 번호 ${fixedNums.join('·')} 포함`
+      : `${META.next_draw_date} 토요일 20:35 추첨`;
+    g.fillStyle = '#6f7896';
+    g.font = `600 26px ${CARD_FONT}`;
+    g.fillText(foot1, W / 2, 1078);
+
+    g.strokeStyle = 'rgba(255,255,255,.10)';
+    g.lineWidth = 1;
+    g.beginPath(); g.moveTo(96, 1178); g.lineTo(W - 96, 1178); g.stroke();
+    g.fillStyle = '#8b93ad';
+    g.font = `600 26px ${CARD_FONT}`;
+    g.fillText('재미로 보는 참고용이에요. 당첨을 보장하지 않아요.', W / 2, 1226);
+    g.fillStyle = '#5d6684';
+    g.font = `700 22px ${CARD_FONT}`;
+    g.fillText('MONG PICK', W / 2, 1272);
+    return cv;
+  }
+
+  function makeCardBlob() {
+    const cv = cardCanvas();
+    return new Promise((resolve) => {
+      if (cv.toBlob) cv.toBlob((b) => resolve(b), 'image/png');
+      else resolve(null);
+    });
+  }
+
+  async function saveResultImage() {
+    if (!LAST_PICK) { toast('먼저 번호를 뽑아 주세요'); return null; }
+    const blob = await makeCardBlob();
+    if (!blob) { toast('이미지를 만들지 못했어요'); return null; }
+    const name = `mongpick-${META.next_round}.png`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast('결과 카드 이미지를 저장했어요');
+    return name;
   }
 
   /* =========================================================
@@ -2365,6 +2692,35 @@
   function saveTickets(list) {
     writeStore(TICKET_KEY, { v: 1, tickets: list.slice(0, TICKET_MAX) });
   }
+  /* 항목 하나를 가리키는 값 — 저장할 때 만든 sig, 없으면 회차·저장시각·내용으로 만든다 */
+  function ticketId(t) {
+    if (!t) return '';
+    return String(t.sig || [t.round, t.savedAt, t.text].join('~'));
+  }
+  /* 개별 삭제 — 그 항목 하나만 지우고 바로 다시 그린다 */
+  function removeTicket(id) {
+    const key = String(id == null ? '' : id);
+    const list = loadTickets();
+    const at = list.findIndex((t) => ticketId(t) === key);
+    if (at < 0) return false;
+    list.splice(at, 1);
+    saveTickets(list);
+    renderTickets();
+    return true;
+  }
+  /* 전체 비우기 — 한 번 확인한 뒤에만 지운다 */
+  function clearTickets(skipConfirm) {
+    const list = loadTickets();
+    if (!list.length) return false;
+    if (!skipConfirm) {
+      const ask = `번호함에 저장된 조합 ${list.length}건을 모두 지울까요? 지우면 되돌릴 수 없어요.`;
+      if (typeof window.confirm === 'function' && !window.confirm(ask)) return false;
+    }
+    saveTickets([]);
+    renderTickets();
+    return true;
+  }
+
   function rememberTicket(o) {
     const round = META.next_round;
     const text = String(o.text || '').slice(0, 60);
@@ -2376,7 +2732,14 @@
       combos: o.combos.map((c) => ({ label: plainStrat(c.strat), nums: c.nums.slice() })),
       savedAt: Date.now()
     };
-    if (found) { entry.savedAt = found.savedAt; list[list.indexOf(found)] = entry; }
+    if (found) {
+      entry.savedAt = found.savedAt;
+      entry.combos.forEach((c) => {
+        const old = found.combos.filter((oc) => oc.nums && oc.nums.join('-') === c.nums.join('-'))[0];
+        if (old && old.bought) c.bought = true;
+      });
+      list[list.indexOf(found)] = entry;
+    }
     else list.unshift(entry);
     saveTickets(list);
     renderTickets();
@@ -2467,7 +2830,7 @@
   }
 
   /* ---------- 번호함 렌더 ---------- */
-  function ticketComboHTML(c, draw, idx) {
+  function ticketComboHTML(c, draw, idx, id) {
     const scored = draw ? scoreCombo(c.nums, draw) : null;
     const balls = c.nums.map((n) => {
       let cls = '';
@@ -2480,29 +2843,76 @@
     const tail = scored
       ? `<span class="tc-rank${scored.rank ? ' is-win' : ''}">${scored.hits.length}개 맞음 · ${scored.label}</span>`
       : `<span class="tc-rank is-wait">${esc(c.label || '')}</span>`;
-    return `<div class="tc-row"><span class="tc-no">${idx + 1}</span>
-      <span class="tc-balls">${balls}</span>${tail}</div>`;
+    const on = !!c.bought;
+    const buy = `<button type="button" class="tc-buy${on ? ' is-on' : ''}" data-id="${id}" data-idx="${idx}"
+        aria-pressed="${on ? 'true' : 'false'}" title="${on ? '산 번호로 표시됨 · 눌러서 해제' : '산 번호로 표시'}">${on ? '샀어요' : '구매'}</button>`;
+    return `<div class="tc-row${on ? ' is-bought' : ''}">
+      <span class="tc-balls">${balls}</span>${tail}${buy}</div>`;
   }
-  function ticketItemHTML(t, draw) {
+  function ticketItemHTML(t, draw, buyOnly) {
     const when = new Date(t.savedAt).toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit' });
-    return `<div class="tb-item">
-      <p class="tb-meta">${esc(MODE_WORD[t.mode] || '꿈')} · ${esc(t.text || '내 조합')} <span class="tb-when">${when}</span></p>
-      ${t.combos.map((c, i) => ticketComboHTML(c, draw, i)).join('')}
+    const id = esc(ticketId(t));
+    const rows = t.combos.map((c, i) => ({ c, i })).filter((x) => !buyOnly || x.c.bought);
+    if (!rows.length) return '';
+    return `<div class="tb-item" data-id="${id}">
+      <div class="tb-meta">
+        <span class="tb-meta-txt">${esc(MODE_WORD[t.mode] || '꿈')} · ${esc(t.text || '내 조합')} <span class="tb-when">${when}</span></span>
+        <button type="button" class="tb-del" data-id="${id}" aria-label="이 조합 삭제" title="이 조합 삭제">×</button>
+      </div>
+      ${rows.map((x) => ticketComboHTML(x.c, draw, x.i, id)).join('')}
     </div>`;
   }
-  function ticketBlockHTML(round, items) {
+  function ticketBlockHTML(round, items, buyOnly) {
     const draw = DRAWS.map[String(round)] || null;
     const head = draw
       ? `<div class="tb-head"><span class="tb-round">${round}회</span>
           <span class="tb-state is-drawn">당첨번호 ${draw.numbers.join(' · ')} + ${draw.bonus}</span></div>`
       : `<p class="tb-wait">${round}회 · 토요일 20:35 추첨 후 자동 확인돼요</p>`;
+    const body = items.map((t) => ticketItemHTML(t, draw, buyOnly)).filter(Boolean).join('');
+    if (!body) return '';
     return `<div class="ticket-block" data-round="${round}" data-drawn="${draw ? '1' : '0'}">
-      ${head}${items.map((t) => ticketItemHTML(t, draw)).join('')}</div>`;
+      ${head}${body}</div>`;
   }
+
+  /* 조합 하나를 '샀어요'로 표시·해제 */
+  function setComboBought(id, idx, on) {
+    const list = loadTickets();
+    const t = list.filter((x) => ticketId(x) === String(id))[0];
+    if (!t || !t.combos[idx]) return false;
+    t.combos[idx].bought = !!on;
+    saveTickets(list);
+    renderTickets();
+    return true;
+  }
+  /* 산 번호만 보기 */
+  function setBuyOnly(on) {
+    STATE.buyOnly = !!on;
+    saveState();
+    renderTickets();
+    return STATE.buyOnly;
+  }
+
   function renderTickets() {
     const box = $('#ticket-list');
     if (!box) return;
     const list = loadTickets();
+    let comboN = 0, boughtN = 0;
+    list.forEach((t) => {
+      comboN += t.combos.length;
+      boughtN += t.combos.filter((c) => c.bought).length;
+    });
+    /* 전체 비우기·보기 도구는 지울 게 있을 때만 보인다 */
+    const clearBtn = $('#clear-tickets');
+    if (clearBtn) clearBtn.hidden = !list.length;
+    const tools = $('#tb-tools');
+    if (tools) tools.hidden = !list.length;
+    const filterBtn = $('#buy-only');
+    if (filterBtn) {
+      filterBtn.setAttribute('aria-pressed', STATE.buyOnly ? 'true' : 'false');
+      filterBtn.classList.toggle('is-on', !!STATE.buyOnly);
+    }
+    const cnt = $('#tb-count');
+    if (cnt) cnt.textContent = list.length ? `저장 ${comboN}조합 · 산 번호 ${boughtN}개` : '';
     if (!list.length) {
       box.innerHTML = '<p class="micro tb-empty">아직 저장된 조합이 없어요. 번호를 뽑으면 이 기기에 자동으로 쌓여요.</p>';
       return;
@@ -2513,7 +2923,11 @@
       (byRound[k] = byRound[k] || []).push(t);
     });
     const rounds = Object.keys(byRound).map(Number).sort((a, b) => b - a).slice(0, 3);
-    box.innerHTML = rounds.map((r) => ticketBlockHTML(r, byRound[String(r)])).join('');
+    let html = rounds.map((r) => ticketBlockHTML(r, byRound[String(r)], STATE.buyOnly)).filter(Boolean).join('');
+    if (!html) {
+      html = '<p class="micro tb-empty">아직 산 번호로 표시한 조합이 없어요. 번호 옆 ‘구매’를 눌러 표시해 보세요.</p>';
+    }
+    box.innerHTML = html;
   }
 
   /* 저장된 회차를 자동 확인 — 앱 시작·안내 탭 진입·`당첨 확인하기` 때 부른다 */
@@ -2592,6 +3006,38 @@
     box.innerHTML = items.join('');
   }
 
+  /* 홈 화면 설치 — 서비스 워커 등록 + 설치 안내 버튼 */
+  let INSTALL_PROMPT = null;
+  function setupPwa() {
+    if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+      navigator.serviceWorker.register('sw.js').catch(() => { /* 등록이 안 돼도 앱은 그대로 쓴다 */ });
+    }
+    const btn = $('#install-app');
+    const note = $('#install-note');
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      INSTALL_PROMPT = e;
+      if (btn) btn.textContent = '앱으로 설치';
+    });
+    if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) {
+      if (note) note.textContent = '이미 홈 화면 앱으로 열려 있어요.';
+      if (btn) btn.hidden = true;
+      return;
+    }
+    if (!btn) return;
+    btn.textContent = '설치 방법 보기';
+    btn.addEventListener('click', async () => {
+      if (!INSTALL_PROMPT) {
+        toast('브라우저 메뉴에서 ‘홈 화면에 추가’를 눌러 주세요');
+        return;
+      }
+      INSTALL_PROMPT.prompt();
+      try { await INSTALL_PROMPT.userChoice; } catch (e) { /* 무시 */ }
+      INSTALL_PROMPT = null;
+      btn.textContent = '설치 방법 보기';
+    });
+  }
+
   async function init() {
     try {
       const res = await fetch('dream_data.json');
@@ -2611,7 +3057,9 @@
       return;
     }
 
-    buildExcludeGrid();
+    buildNumberGrid($('#exclude-grid'), 'exclude');
+    buildNumberGrid($('#fixed-grid'), 'fixed');
+    buildNumberGrid($('#fixed-grid-nodream'), 'fixed');
     buildShichenSelect($('#birth-hour'), null);
     syncRoundMeta();
     loadState();
@@ -2621,8 +3069,9 @@
     }
     if (STATE.birth.hour != null) $('#birth-hour').value = String(STATE.birth.hour);
     renderPeople();
-    syncExcludeNote();
+    syncNumberGrids();
     updateBirthHint();
+    setupPwa();
     renderBoard();
 
     renderTickets();
@@ -2687,6 +3136,32 @@
     }));
 
     $('#run-check').addEventListener('click', runCheck);
+
+    /* 번호함 삭제 — 항목별 × · 헤더의 전체 비우기(확인 1회) */
+    const tlist = $('#ticket-list');
+    if (tlist) tlist.addEventListener('click', (e) => {
+      const buy = e.target.closest('.tc-buy');
+      if (buy) {
+        const on = buy.getAttribute('aria-pressed') !== 'true';
+        if (setComboBought(buy.dataset.id, Number(buy.dataset.idx), on)) {
+          toast(on ? '산 번호로 표시했어요' : '산 표시를 풀었어요');
+        }
+        return;
+      }
+      const btn = e.target.closest('.tb-del');
+      if (!btn) return;
+      if (removeTicket(btn.dataset.id)) toast('번호함에서 지웠어요');
+    });
+    const only = $('#buy-only');
+    if (only) only.addEventListener('click', () => {
+      const on = setBuyOnly(!STATE.buyOnly);
+      toast(on ? '산 번호만 모아 봐요' : '전체 번호를 봐요');
+    });
+    const clr = $('#clear-tickets');
+    if (clr) clr.addEventListener('click', () => {
+      if (clearTickets()) toast('번호함을 비웠어요');
+    });
+
     const tc = $('#run-ticket-check');
     if (tc) tc.addEventListener('click', () => {
       refreshTickets({ force: true }).then(() => toast('당첨 결과를 새로 받았어요'));
@@ -2697,9 +3172,12 @@
   window.MongPick = {
     state: STATE, meta: META, data: D, saju: SAJU,
     analyze, buildCombos, dreamFortune, statsOf, acValue,
+    cardCanvas, makeCardBlob, saveResultImage, setFixed, setExcluded, syncNumberGrids,
     runDream, runSign, runBalance,
     tickets: {
       load: loadTickets, save: saveTickets, remember: rememberTicket,
+      remove: removeTicket, clear: clearTickets, idOf: ticketId,
+      buy: setComboBought, buyOnly: setBuyOnly,
       refresh: refreshTickets, render: renderTickets, score: scoreCombo,
       draws: DRAWS, drawTime: drawTimeOf, drawDate: drawDateOf,
       current: currentRoundInfo, apiOn
