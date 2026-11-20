@@ -2645,7 +2645,7 @@
   /* dream_data.json이 알려 준 기준 회차(1251회 · 2026-11-21) — 날짜로 현재 회차를 다시 센다 */
   const ROUND_ANCHOR = { round: META.next_round, date: META.next_draw_date };
   const WEEK_MS = 7 * 86400000;
-  const MODE_WORD = { dream: '꿈', sign: '오늘 본 것', balance: '생일만으로' };
+  const MODE_WORD = { dream: '꿈', sign: '오늘 본 것', balance: '생일만으로', example: '오늘의 꿈' };
 
   function readStore(key) {
     try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { return null; }
@@ -2967,6 +2967,103 @@
   }
 
   /* =========================================================
+     13-b. 오늘의 꿈 사례 — 미리 계산해 고정한 번호 피드
+        · dreams.json: 5~6줄 꿈 이야기 + 고정 6수 + 왜 그 수인지
+        · `이 번호 담기` → 번호함(localStorage)에 이번 회차로 저장 + 토스트
+        · 여기서 번호를 다시 뽑지 않는다(카드의 수와 설명이 어긋나지 않게)
+     ========================================================= */
+  const FEED = { cases: [], updated: '' };
+
+  function feedCaseOk(c) {
+    return !!(c && c.id && c.theme && Array.isArray(c.story) && c.story.length
+      && Array.isArray(c.nums) && c.nums.length === 6 && c.nums.every((n) => n >= 1 && n <= 45));
+  }
+
+  async function loadFeed() {
+    const box = $('#dream-feed');
+    if (!box) return;
+    try {
+      const res = await fetch('dreams.json');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      FEED.cases = ((data && data.cases) || []).filter(feedCaseOk);
+      FEED.updated = (data && data.updated) || '';
+    } catch (e) {
+      FEED.cases = [];
+    }
+    renderFeed();
+  }
+
+  function feedTicketText(c) {
+    return `${c.theme} · ${c.title}`;
+  }
+  /* 이미 담아 둔 사례인지 — 번호함의 같은 회차 · 같은 문구로 찾는다 */
+  function feedSaved(c) {
+    const want = feedTicketText(c);
+    return loadTickets().some((t) => String(t.round) === String(META.next_round) && String(t.text) === want);
+  }
+
+  function feedCardHTML(c) {
+    const teaser = String(c.story[0] || '').replace(/\s+/g, ' ');
+    const peek = c.nums.map((n) => numballHTML(n)).join('');
+    const lines = c.story.map((line) => `<p class="dc-line">${esc(line)}</p>`).join('');
+    const balls = c.nums.map((n) => `<span class="ball ${ballClass(n)}" style="animation-delay:${c.nums.indexOf(n) * 45}ms">${n}</span>`).join('');
+    const why = (c.why || []).filter(Boolean).map((line) => `<p class="dc-why-line">${esc(line)}</p>`).join('');
+    const ballWhy = (c.ballWhy || []).filter((b) => b && b.n && b.text);
+    const ballFold = ballWhy.length
+      ? `<details class="dc-ballfold"><summary>공 하나하나 보기</summary><div class="dc-balllist">${
+          ballWhy.map((b) => `<p class="dc-ballline"><b>${b.n}</b> ${esc(b.text)}</p>`).join('')
+        }</div></details>`
+      : '';
+    const saved = feedSaved(c);
+    return `<details class="dc" data-id="${esc(c.id)}">
+      <summary class="dc-sum">
+        <span class="dc-kicker">오늘의 꿈 사례 · #${esc(c.theme)}</span>
+        <span class="dc-title">${esc(c.title)}</span>
+        <span class="dc-teaser">${esc(teaser)}</span>
+        <span class="dc-peek">${peek}</span>
+        <span class="dc-more">펼쳐 보기</span>
+      </summary>
+      <div class="dc-body">
+        <div class="dc-story">${lines}</div>
+        <div class="dc-nums">${balls}</div>
+        ${why ? `<div class="dc-why"><p class="dc-why-head">왜 이 번호예요?</p>${why}${ballFold}</div>` : ''}
+        ${c.tip ? `<p class="dc-tip">${esc(c.tip)}</p>` : ''}
+        <div class="dc-actions">
+          <button type="button" class="primary-btn js-dream-add${saved ? ' is-saved' : ''}" data-id="${esc(c.id)}"
+            data-saved="${saved ? '1' : '0'}">${saved ? '번호함에 담김' : '이 번호 담기'}</button>
+        </div>
+        <p class="dc-note">${META.next_round}회 번호함에 담기고, 추첨 뒤에 <b>안내</b> 탭에서 자동으로 채점돼요.</p>
+      </div>
+    </details>`;
+  }
+
+  function renderFeed() {
+    const box = $('#dream-feed');
+    if (!box) return;
+    if (!FEED.cases.length) {
+      box.innerHTML = '<p class="feed-empty">오늘의 사례를 불러오지 못했어요. 잠시 뒤에 다시 열어 주세요.</p>';
+      return;
+    }
+    box.innerHTML = FEED.cases.map(feedCardHTML).join('');
+  }
+
+  /* 담기 — 번호함에 이번 회차로 저장하고 토스트 */
+  function addFeedTicket(id) {
+    const c = FEED.cases.filter((x) => x.id === id)[0];
+    if (!c) return null;
+    const entry = rememberTicket({
+      mode: 'example',
+      text: feedTicketText(c),
+      combos: [{ nums: c.nums.slice(), strat: { key: 'feed', label: '오늘의 꿈 사례' } }]
+    });
+    toast(entry.duplicate ? '이미 번호함에 담긴 조합이에요' : `${entry.round}회 내 번호함에 담았어요`);
+    const btn = $('#dream-feed .js-dream-add[data-id="' + id + '"]');
+    if (btn) { btn.classList.add('is-saved'); btn.dataset.saved = '1'; btn.textContent = '번호함에 담김'; }
+    return entry;
+  }
+
+  /* =========================================================
      14. 탭 · 초기화
      ========================================================= */
   function switchTab(name) {
@@ -2978,6 +3075,7 @@
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
     if (name === 'nodream') updateBirthHint();
+    if (name === 'today' && !FEED.cases.length) loadFeed();
     if (name === 'reason') renderReasonPage();
     if (name === 'trust') { renderTickets(); refreshTickets(); }
   }
@@ -3075,10 +3173,18 @@
     renderBoard();
 
     renderTickets();
+    loadFeed();
     refreshTickets().then(() => renderBoard());
 
     /* 이벤트 */
     $$('.tabbar .tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+
+    /* 오늘의 꿈 사례 — 카드 안 `이 번호 담기` */
+    const feedBox = $('#dream-feed');
+    if (feedBox) feedBox.addEventListener('click', (e) => {
+      const add = e.target.closest('.js-dream-add');
+      if (add) { addFeedTicket(add.dataset.id); return; }
+    });
 
     $('#dream-input').addEventListener('input', (e) => {
       $('#char-count').textContent = e.target.value.length;
@@ -3185,7 +3291,9 @@
     mulsang: mulsangOf, toneOf, elemLabel, dreamElemProfile, matchRule, natalElemState,
     renderTop, renderVibe, renderRest, renderWhy, renderPaperCard, renderSajuCard, renderCalc, renderBoard,
     renderReasonPage, renderReasonCta, renderReasonSummary, renderReasonStep1, renderReasonStep2,
-    renderReasonStep3, renderReasonStep4, briefSources, paperInner, calcInner, elemBarsHTML
+    renderReasonStep3, renderReasonStep4, briefSources, paperInner, calcInner, elemBarsHTML,
+    feed: { data: FEED, load: loadFeed, render: renderFeed, add: addFeedTicket, saved: feedSaved,
+            text: feedTicketText }
   };
 
   document.addEventListener('DOMContentLoaded', init);
